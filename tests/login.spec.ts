@@ -1,0 +1,29 @@
+import { test, expect } from '@playwright/test';
+import { LoginPage } from '../pages/LoginPage';
+import { usersData } from '../parameters/usersData';
+
+test('Standard user can login successfully', async ({ page }) => {
+    const loginPage = new LoginPage(page);
+
+    await page.goto('https://www.saucedemo.com/');
+
+    await loginPage.login(
+        usersData.standardUser.username,
+        usersData.standardUser.password
+    );
+
+    await expect(page).toHaveURL(/inventory/);
+});
+
+test('Invalid user cannot login successfully', async ({ page }) => {
+    const loginPage = new LoginPage(page);
+
+    await page.goto('https://www.saucedemo.com/');
+
+    await loginPage.login(
+        usersData.invalidUser.username,
+        usersData.invalidUser.password
+    );
+
+    await expect(loginPage.errorMessage).toBeVisible();
+});
