@@ -188,7 +188,7 @@ test('User can remove Sauce Labs Bolt T-Shirt from cart', async ({ loggedInPage 
 
     await expect(
         loggedInPage.locator('[data-test="item-1-title-link"]')
-    ).toHaveCount(0);
+    ).toHaveCount(1); //promijenila da padne test 
 });
 
 test('User can complete checkout successfully @smoke', async ({ loggedInPage }) => {

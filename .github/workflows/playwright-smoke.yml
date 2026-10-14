@@ -1,3 +1,4 @@
+
 name: Nightly Smoke Tests
 
 on:
@@ -45,7 +46,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload machine-readable test results
+      - name: Upload JSON results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
@@ -54,211 +55,221 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  create-issue:
+  create-issues:
     if: ${{ always() && needs.smoke.result == 'failure' }}
     needs: smoke
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download test results
+      - name: Download JSON results
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: smoke-test-results
           path: artifacts
 
-      - name: Create or update smoke test failure issue
+      - name: Create or update an Issue for each failed test
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const { owner, repo } = context.repo;
+            const crypto = require('crypto');
 
+            const { owner, repo } = context.repo;
+            const labelName = 'automation-failure';
             const runUrl =
               `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
-            const title = '🚨 Playwright Smoke Tests Failed';
-            const labelName = 'automation-failure';
             const resultsPath = path.join('artifacts', 'results.json');
+
+            if (!fs.existsSync(resultsPath)) {
+              throw new Error(
+                'Playwright JSON report is missing. Check the failed workflow run and its artifacts.'
+              );
+            }
+
+            const report = JSON.parse(
+              fs.readFileSync(resultsPath, 'utf8')
+            );
 
             function extractFailures(suite, parents = []) {
               const failures = [];
-              const suiteTitle = suite.title ? [...parents, suite.title] : parents;
+              const titles = suite.title
+                ? [...parents, suite.title]
+                : parents;
 
               for (const spec of suite.specs || []) {
                 for (const test of spec.tests || []) {
                   for (const result of test.results || []) {
                     if (
-                      result.status !== 'failed' &&
-                      result.status !== 'timedOut' &&
-                      !result.error
+                      !['failed', 'timedOut', 'interrupted'].includes(
+                        result.status
+                      ) && !result.error
                     ) {
                       continue;
                     }
 
-                    const error = result.error || {};
                     failures.push({
-                      title: [...suiteTitle, spec.title, test.title]
+                      title: [...titles, spec.title]
                         .filter(Boolean)
                         .join(' › '),
-                      browser: test.projectName || 'Chromium',
                       status: result.status || 'failed',
-                      message: error.message || 'No error message available.',
-                      stack: error.stack || ''
+                      message: result.error?.message ||
+                        'No error message available.',
+                      stack: result.error?.stack || ''
                     });
                   }
                 }
               }
 
               for (const child of suite.suites || []) {
-                failures.push(...extractFailures(child, suiteTitle));
+                failures.push(...extractFailures(child, titles));
               }
 
               return failures;
             }
 
-            let failures = [];
-            let resultsAvailable = false;
+            const failures = (report.suites || [])
+              .flatMap(suite => extractFailures(suite));
 
-            try {
-              if (fs.existsSync(resultsPath)) {
-                const report = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
-                failures = (report.suites || []).flatMap(suite =>
-                  extractFailures(suite)
-                );
-                resultsAvailable = true;
-              }
-            } catch (error) {
-              core.warning(`Could not parse Playwright JSON report: ${error.message}`);
+            if (failures.length === 0) {
+              throw new Error(
+                'The workflow failed, but no failed tests were found in the JSON report.'
+              );
             }
 
-            const failureDetails = failures.length
-              ? failures.slice(0, 10).map((failure, index) => {
-                  const errorText = [
-                    failure.message,
-                    failure.stack ? `\n${failure.stack}` : ''
-                  ].join('').slice(0, 3500);
+            const { data: allIssues } =
+              await github.rest.issues.listForRepo({
+                owner,
+                repo,
+                state: 'open',
+                labels: labelName,
+                per_page: 100
+              });
 
-                  return [
-                    `### ${index + 1}. ${failure.title}`,
+            let labelExists = true;
+
+            try {
+              await github.rest.issues.getLabel({
+                owner,
+                repo,
+                name: labelName
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                labelExists = false;
+              } else {
+                throw error;
+              }
+            }
+
+            if (!labelExists) {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name: labelName,
+                color: 'd73a4a',
+                description: 'Automatically reported smoke test failures'
+              });
+            }
+
+            for (const failure of failures) {
+              const testKey = crypto
+                .createHash('sha256')
+                .update(failure.title)
+                .digest('hex')
+                .slice(0, 16);
+
+              const marker = `<!-- playwright-test:${testKey} -->`;
+
+              const existingIssue = allIssues.find(issue =>
+                issue.body?.includes(marker)
+              );
+
+              const errorText = [
+                failure.message,
+                failure.stack ? `\n${failure.stack}` : ''
+              ].join('').slice(0, 5000);
+
+              const body = [
+                marker,
+                '# Playwright Smoke Test Failure',
+                '',
+                '> An automated test failed. This does not necessarily mean the application has a bug.',
+                '',
+                '## Run details',
+                '',
+                `- **Failed test:** ${failure.title}`,
+                `- **Result:** ${failure.status}`,
+                '- **Browser:** Chromium',
+                `- **Branch:** \`${context.ref}\``,
+                `- **Commit:** [\`${context.sha.slice(0, 7)}\`](${context.serverUrl}/${owner}/${repo}/commit/${context.sha})`,
+                `- **Workflow run:** [Open run and reports](${runUrl})`,
+                '',
+                '## Error details',
+                '',
+                '<details>',
+                '<summary>View error message and stack trace</summary>',
+                '',
+                '```text',
+                errorText,
+                '```',
+                '',
+                '</details>',
+                '',
+                '## Investigation checklist',
+                '',
+                '- [ ] Review expected vs. actual result.',
+                '- [ ] Inspect the stack trace, screenshot, and trace if available.',
+                '- [ ] Determine whether this is an application defect, test issue, or environment failure.',
+                '- [ ] Record the root cause and verify the fix.',
+                '',
+                '## Automation notes',
+                '',
+                '- Reported automatically by GitHub Actions.',
+                '- No application or test code was automatically modified.'
+              ].join('\n');
+
+              if (existingIssue) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: existingIssue.number,
+                  body: [
+                    '## The same test failed again',
                     '',
-                    `- **Browser:** ${failure.browser}`,
-                    `- **Result:** ${failure.status}`,
+                    `**Latest run:** [Open workflow run](${runUrl})`,
+                    '',
+                    `**Result:** ${failure.status}`,
                     '',
                     '<details>',
-                    '<summary>View error and stack trace</summary>',
+                    '<summary>View latest error</summary>',
                     '',
                     '```text',
                     errorText,
                     '```',
                     '',
                     '</details>'
-                  ].join('\n');
-                }).join('\n\n')
-              : resultsAvailable
-                ? 'The JSON report was available, but no individual failed test could be extracted. Review the workflow logs.'
-                : 'The JSON test report was unavailable. Review the workflow logs for the failure details.';
+                  ].join('\n')
+                });
 
-            const body = [
-              '# 🚨 Playwright Smoke Test Failure',
-              '',
-              '> One or more smoke tests failed. This is an investigation alert, not confirmation of an application bug.',
-              '',
-              '## 📋 Run summary',
-              '',
-              '| Detail | Value |',
-              '|---|---|',
-              `| **Workflow** | Nightly Smoke Tests |`,
-              `| **Browser** | Chromium |`,
-              `| **Branch** | \`${context.ref}\` |`,
-              `| **Commit** | [\`${context.sha.slice(0, 7)}\`](${context.serverUrl}/${owner}/${repo}/commit/${context.sha}) |`,
-              `| **Run ID** | ${context.runId} |`,
-              `| **Failed tests extracted** | ${failures.length} |`,
-              '',
-              `**[🔎 Open workflow run and download reports](${runUrl})**`,
-              '',
-              '## 🧪 Failed test details',
-              '',
-              failureDetails,
-              failures.length > 10
-                ? `\n_Only the first 10 failures are shown. Review the full report for the remaining ${failures.length - 10}._`
-                : '',
-              '',
-              '## 🛠️ Investigation checklist',
-              '',
-              '- [ ] Review the failed test and expected vs. actual result.',
-              '- [ ] Inspect the stack trace and HTML report.',
-              '- [ ] Check the screenshot or trace, if available.',
-              '- [ ] Determine whether the cause is the application, test code, or environment.',
-              '- [ ] Record the root cause and verified resolution.',
-              '',
-              '## 🤖 Automation notes',
-              '',
-              '- This Issue was generated by GitHub Actions.',
-              '- Failure details are extracted from the Playwright JSON report when available.',
-              '- No application or test code was automatically modified.',
-              '',
-              '_Update this Issue after the cause has been investigated._'
-            ].join('\n');
-
-            const { data: existingIssues } = await github.rest.issues.listForRepo({
-              owner,
-              repo,
-              state: 'open',
-              labels: labelName,
-              per_page: 100
-            });
-
-            if (existingIssues.length > 0) {
-              const issue = existingIssues[0];
-
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: issue.number,
-                body: [
-                  '## 🔁 Another smoke test run failed',
-                  '',
-                  body
-                ].join('\n')
-              });
-
-              core.info(`Added a comment to existing issue #${issue.number}`);
-            } else {
-              let labelExists = true;
-
-              try {
-                await github.rest.issues.getLabel({
+                core.info(
+                  `Updated Issue #${existingIssue.number} for: ${failure.title}`
+                );
+              } else {
+                const issue = await github.rest.issues.create({
                   owner,
                   repo,
-                  name: labelName
+                  title: `Playwright failure: ${failure.title}`,
+                  body,
+                  labels: [labelName]
                 });
-              } catch (error) {
-                if (error.status === 404) {
-                  labelExists = false;
-                } else {
-                  throw error;
-                }
+
+                allIssues.push(issue.data);
+
+                core.info(
+                  `Created Issue #${issue.data.number} for: ${failure.title}`
+                );
               }
-
-              if (!labelExists) {
-                await github.rest.issues.createLabel({
-                  owner,
-                  repo,
-                  name: labelName,
-                  color: 'd73a4a',
-                  description: 'Automatically reported smoke test failures'
-                });
-              }
-
-              const issue = await github.rest.issues.create({
-                owner,
-                repo,
-                title,
-                body,
-                labels: [labelName]
-              });
-
-              core.info(`Created issue #${issue.data.number}`);
             }
