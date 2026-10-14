@@ -1,4 +1,4 @@
-
+/* ovo je nacin ako zelim samo da se pokrece u 00:00, drugi dio je da se i kreira git issue
 name: Nightly Smoke Tests
 
 on:
@@ -38,3 +38,136 @@ jobs:
           name: nightly-smoke-report
           path: playwright-report/
           retention-days: 30
+*/
+name: Nightly Smoke Tests
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  smoke:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke tests
+        run: npx playwright test --grep "@smoke" --project=chromium
+
+      - name: Upload smoke test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-smoke-report
+          path: playwright-report/
+          retention-days: 30
+
+  create-issue:
+    if: ${{ always() && needs.smoke.result == 'failure' }}
+    needs: smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create or update smoke test failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = 'Nightly smoke tests failed';
+            const labelName = 'automation-failure';
+
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              labels: labelName,
+              per_page: 100
+            });
+
+            const body = [
+              '## Smoke test failure',
+              '',
+              'The Playwright smoke test workflow failed. This does not automatically mean the application has a bug; the cause still needs investigation.',
+              '',
+              `- **Workflow run:** [View failed run](${runUrl})`,
+              `- **Branch:** ${context.ref}`,
+              `- **Commit:** ${context.sha}`,
+              `- **Run ID:** ${context.runId}`,
+              '',
+              '### Next steps',
+              '1. Open the workflow run and inspect the failed test and stack trace.',
+              '2. Download the available report artifact.',
+              '3. Determine whether this is an application defect, a test issue, or an environment/flaky failure.',
+              '',
+              '_This issue was created automatically by GitHub Actions._'
+            ].join('\n');
+
+            if (existingIssues.length > 0) {
+              const issue = existingIssues[0];
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body: `Another smoke test run failed.\n\n${body}`
+              });
+
+              core.info(`Added a comment to existing issue #${issue.number}`);
+            } else {
+              let labelExists = true;
+
+              try {
+                await github.rest.issues.getLabel({
+                  owner,
+                  repo,
+                  name: labelName
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  labelExists = false;
+                } else {
+                  throw error;
+                }
+              }
+
+              if (!labelExists) {
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: labelName,
+                  color: 'd73a4a',
+                  description: 'Automatically reported smoke test failures'
+                });
+              }
+
+              const issue = await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                labels: [labelName]
+              });
+
+              core.info(`Created issue #${issue.data.number}`);
+            }
