@@ -3,6 +3,7 @@ name: Nightly Smoke Tests
 on:
   schedule:
     - cron: '0 0 * * *'
+      timezone: 'Europe/Sarajevo'
   workflow_dispatch:
 
 permissions:
@@ -31,14 +32,26 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run smoke tests
-        run: npx playwright test --grep "@smoke" --project=chromium
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/results.json
+        run: npx playwright test --grep "@smoke" --project=chromium --reporter=list,html,json
 
-      - name: Upload smoke test report
+      - name: Upload HTML report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: nightly-smoke-report
           path: playwright-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload machine-readable test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: test-results/results.json
+          if-no-files-found: warn
           retention-days: 30
 
   create-issue:
@@ -47,14 +60,147 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: smoke-test-results
+          path: artifacts
+
       - name: Create or update smoke test failure issue
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const path = require('path');
             const { owner, repo } = context.repo;
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const title = 'Nightly smoke tests failed';
+
+            const runUrl =
+              `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            const title = '🚨 Playwright Smoke Tests Failed';
             const labelName = 'automation-failure';
+            const resultsPath = path.join('artifacts', 'results.json');
+
+            function extractFailures(suite, parents = []) {
+              const failures = [];
+              const suiteTitle = suite.title ? [...parents, suite.title] : parents;
+
+              for (const spec of suite.specs || []) {
+                for (const test of spec.tests || []) {
+                  for (const result of test.results || []) {
+                    if (
+                      result.status !== 'failed' &&
+                      result.status !== 'timedOut' &&
+                      !result.error
+                    ) {
+                      continue;
+                    }
+
+                    const error = result.error || {};
+                    failures.push({
+                      title: [...suiteTitle, spec.title, test.title]
+                        .filter(Boolean)
+                        .join(' › '),
+                      browser: test.projectName || 'Chromium',
+                      status: result.status || 'failed',
+                      message: error.message || 'No error message available.',
+                      stack: error.stack || ''
+                    });
+                  }
+                }
+              }
+
+              for (const child of suite.suites || []) {
+                failures.push(...extractFailures(child, suiteTitle));
+              }
+
+              return failures;
+            }
+
+            let failures = [];
+            let resultsAvailable = false;
+
+            try {
+              if (fs.existsSync(resultsPath)) {
+                const report = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+                failures = (report.suites || []).flatMap(suite =>
+                  extractFailures(suite)
+                );
+                resultsAvailable = true;
+              }
+            } catch (error) {
+              core.warning(`Could not parse Playwright JSON report: ${error.message}`);
+            }
+
+            const failureDetails = failures.length
+              ? failures.slice(0, 10).map((failure, index) => {
+                  const errorText = [
+                    failure.message,
+                    failure.stack ? `\n${failure.stack}` : ''
+                  ].join('').slice(0, 3500);
+
+                  return [
+                    `### ${index + 1}. ${failure.title}`,
+                    '',
+                    `- **Browser:** ${failure.browser}`,
+                    `- **Result:** ${failure.status}`,
+                    '',
+                    '<details>',
+                    '<summary>View error and stack trace</summary>',
+                    '',
+                    '```text',
+                    errorText,
+                    '```',
+                    '',
+                    '</details>'
+                  ].join('\n');
+                }).join('\n\n')
+              : resultsAvailable
+                ? 'The JSON report was available, but no individual failed test could be extracted. Review the workflow logs.'
+                : 'The JSON test report was unavailable. Review the workflow logs for the failure details.';
+
+            const body = [
+              '# 🚨 Playwright Smoke Test Failure',
+              '',
+              '> One or more smoke tests failed. This is an investigation alert, not confirmation of an application bug.',
+              '',
+              '## 📋 Run summary',
+              '',
+              '| Detail | Value |',
+              '|---|---|',
+              `| **Workflow** | Nightly Smoke Tests |`,
+              `| **Browser** | Chromium |`,
+              `| **Branch** | \`${context.ref}\` |`,
+              `| **Commit** | [\`${context.sha.slice(0, 7)}\`](${context.serverUrl}/${owner}/${repo}/commit/${context.sha}) |`,
+              `| **Run ID** | ${context.runId} |`,
+              `| **Failed tests extracted** | ${failures.length} |`,
+              '',
+              `**[🔎 Open workflow run and download reports](${runUrl})**`,
+              '',
+              '## 🧪 Failed test details',
+              '',
+              failureDetails,
+              failures.length > 10
+                ? `\n_Only the first 10 failures are shown. Review the full report for the remaining ${failures.length - 10}._`
+                : '',
+              '',
+              '## 🛠️ Investigation checklist',
+              '',
+              '- [ ] Review the failed test and expected vs. actual result.',
+              '- [ ] Inspect the stack trace and HTML report.',
+              '- [ ] Check the screenshot or trace, if available.',
+              '- [ ] Determine whether the cause is the application, test code, or environment.',
+              '- [ ] Record the root cause and verified resolution.',
+              '',
+              '## 🤖 Automation notes',
+              '',
+              '- This Issue was generated by GitHub Actions.',
+              '- Failure details are extracted from the Playwright JSON report when available.',
+              '- No application or test code was automatically modified.',
+              '',
+              '_Update this Issue after the cause has been investigated._'
+            ].join('\n');
 
             const { data: existingIssues } = await github.rest.issues.listForRepo({
               owner,
@@ -64,24 +210,6 @@ jobs:
               per_page: 100
             });
 
-            const body = [
-              '## Smoke test failure',
-              '',
-              'The Playwright smoke test workflow failed. This does not automatically mean the application has a bug; the cause still needs investigation.',
-              '',
-              `- **Workflow run:** [View failed run](${runUrl})`,
-              `- **Branch:** ${context.ref}`,
-              `- **Commit:** ${context.sha}`,
-              `- **Run ID:** ${context.runId}`,
-              '',
-              '### Next steps',
-              '1. Open the workflow run and inspect the failed test and stack trace.',
-              '2. Download the available report artifact.',
-              '3. Determine whether this is an application defect, a test issue, or an environment/flaky failure.',
-              '',
-              '_This issue was created automatically by GitHub Actions._'
-            ].join('\n');
-
             if (existingIssues.length > 0) {
               const issue = existingIssues[0];
 
@@ -89,7 +217,11 @@ jobs:
                 owner,
                 repo,
                 issue_number: issue.number,
-                body: `Another smoke test run failed.\n\n${body}`
+                body: [
+                  '## 🔁 Another smoke test run failed',
+                  '',
+                  body
+                ].join('\n')
               });
 
               core.info(`Added a comment to existing issue #${issue.number}`);
