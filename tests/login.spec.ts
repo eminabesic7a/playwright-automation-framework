@@ -12,7 +12,8 @@ test('Standard user can login successfully @smoke', async ({ page }) => {
         usersData.standardUser.password
     );
 
-    await expect(page).toHaveURL(/inventory/);
+    //await expect(page).toHaveURL(/inventory/);
+    await expect(page).toHaveURL(/this-page-should-not-exist/);
 });
 
 test('Invalid user cannot login successfully @smoke', async ({ page }) => {
