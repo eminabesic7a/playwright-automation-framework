@@ -217,12 +217,12 @@ test('User can complete checkout successfully @smoke', async ({ loggedInPage }) 
 
     await checkoutPage.finishOrder();
 
-   /* await expect(
-        checkoutPage.confirmationMessage
-    ).toBeVisible();*/
     await expect(
+        checkoutPage.confirmationMessage
+    ).toBeVisible();
+    /*await expect(
     checkoutPage.confirmationMessage
-).toHaveText('ORDER FAILED');
+).toHaveText('ORDER FAILED');*/
 });
 
 test('Checkout shows error when customer information is empty @smoke', async ({ loggedInPage }) => {
