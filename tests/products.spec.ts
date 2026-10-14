@@ -188,7 +188,7 @@ test('User can remove Sauce Labs Bolt T-Shirt from cart', async ({ loggedInPage 
 
     await expect(
         loggedInPage.locator('[data-test="item-1-title-link"]')
-    ).toHaveCount(1); //promijenila da padne test 
+    ).toHaveCount(0); 
 });
 
 test('User can complete checkout successfully @smoke', async ({ loggedInPage }) => {
@@ -217,9 +217,12 @@ test('User can complete checkout successfully @smoke', async ({ loggedInPage }) 
 
     await checkoutPage.finishOrder();
 
-    await expect(
+   /* await expect(
         checkoutPage.confirmationMessage
-    ).toBeVisible();
+    ).toBeVisible();*/
+    await expect(
+    checkoutPage.confirmationMessage
+).toHaveText('ORDER FAILED');
 });
 
 test('Checkout shows error when customer information is empty @smoke', async ({ loggedInPage }) => {
