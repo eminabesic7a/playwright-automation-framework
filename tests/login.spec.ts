@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { LoginPage } from '../pages/LoginPage';
 import { usersData } from '../parameters/usersData';
 
-test('Standard user can login successfully', async ({ page }) => {
+test('Standard user can login successfully @smoke', async ({ page }) => {
     const loginPage = new LoginPage(page);
 
     await page.goto('https://www.saucedemo.com/');
@@ -15,7 +15,7 @@ test('Standard user can login successfully', async ({ page }) => {
     await expect(page).toHaveURL(/inventory/);
 });
 
-test('Invalid user cannot login successfully', async ({ page }) => {
+test('Invalid user cannot login successfully @smoke', async ({ page }) => {
     const loginPage = new LoginPage(page);
 
     await page.goto('https://www.saucedemo.com/');

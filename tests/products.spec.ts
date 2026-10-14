@@ -161,7 +161,7 @@ import { ProductsPage } from '../pages/ProductsPage';
 import { CartPage } from '../pages/CartPage';
 import { CheckoutPage } from '../pages/CheckoutPage';
 
-test('User can add Sauce Labs Bolt T-Shirt to cart', async ({ loggedInPage }) => {
+test('User can add Sauce Labs Bolt T-Shirt to cart @smoke', async ({ loggedInPage }) => {
     const productsPage = new ProductsPage(loggedInPage);
     const cartPage = new CartPage(loggedInPage);
 
@@ -191,7 +191,7 @@ test('User can remove Sauce Labs Bolt T-Shirt from cart', async ({ loggedInPage 
     ).toHaveCount(0);
 });
 
-test('User can complete checkout successfully', async ({ loggedInPage }) => {
+test('User can complete checkout successfully @smoke', async ({ loggedInPage }) => {
     const productsPage = new ProductsPage(loggedInPage);
     const cartPage = new CartPage(loggedInPage);
     const checkoutPage = new CheckoutPage(loggedInPage);
@@ -222,7 +222,7 @@ test('User can complete checkout successfully', async ({ loggedInPage }) => {
     ).toBeVisible();
 });
 
-test('Checkout shows error when customer information is empty', async ({ loggedInPage }) => {
+test('Checkout shows error when customer information is empty @smoke', async ({ loggedInPage }) => {
     const productsPage = new ProductsPage(loggedInPage);
     const cartPage = new CartPage(loggedInPage);
     const checkoutPage = new CheckoutPage(loggedInPage);
